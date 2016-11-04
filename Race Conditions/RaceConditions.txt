@@ -1,0 +1,109 @@
+RACE CONDITIONS
+
+If a device is opened in Mode 1:
+
+Critical Sections:
+
+  Open:
+    down_interruptible(&devc->sem1);
+    devc->count1++;
+    up(&devc->sem1);
+    down_interruptible(&devc->sem2);
+
+  Read:
+    down_interruptible(&devc->sem1);
+    up(&devc->sem1);
+
+  Write:
+    down_interruptible(&devc->sem1);
+    up(&devc->sem1);
+
+  Ioctl:
+    E2_IOCMODE2
+    down_interruptible(&(devc->sem1));
+    if (devc->mode == MODE2) {
+      up(&devc->sem1);
+      break;
+    }
+    if (devc->count1 > 1) {
+      while (devc->count1 > 1) {
+        up(&devc->sem1);
+          wait_event_interruptible(devc->queue1, (devc->count1 == 1));
+        down_interruptible(&devc->sem1);
+      }
+    }
+    devc->mode = MODE2;
+            devc->count1--;
+            devc->count2++;
+    up(&devc->sem2);
+    up(&devc->sem1);
+
+    E2_IOCMODE1:
+				down_interruptible(&devc->sem1);
+				if (devc->mode == MODE1) {
+				   up(&devc->sem1);
+				   break;
+				}
+				if (devc->count2 > 1) {
+				   while (devc->count2 > 1) {
+				       up(&devc->sem1);
+				       wait_event_interruptible(devc->queue2, (devc->count2 == 1));
+				       down_interruptible(&devc->sem1);
+				   }
+				}
+				devc->mode = MODE1;
+                devc->count2--;
+                devc->count1++;
+				down(&devc->sem2);
+				up(&devc->sem1);
+
+  Release:
+    down_interruptible(&devc->sem1);
+    devc->count1--;
+    if (devc->count1 == 1)
+        wake_up_interruptible(&(devc->queue1));
+    up(&devc->sem2);
+
+If a device is opened in mode 1, it locks sem1 thereby preventing other devices to perform any other operations like read or write or close. So, there is no race condition encountered in mode 1.
+
+If a device is opened in Mode 2:
+
+Critical Sections:
+
+Open:
+  down_interruptible(&devc->sem1);
+  devc->count2++;
+  up(&devc->sem1);
+
+Read:
+  down_interruptible(&devc->sem1);
+  if (*f_pos + count > ramdisk_size) {
+     printk("Trying to read past end of buffer!\n");
+     up(&devc->sem1);
+     return ret;
+  }
+  ret = count - copy_to_user(buf, devc->ramdisk, count);
+  up(&devc->sem1);
+
+Write:
+  down_interruptible(&devc->sem1);
+  if (*f_pos + count > ramdisk_size) {
+      printk("Trying to read past end of buffer!\n");
+      up(&devc->sem1);
+      return ret;
+  }
+  ret = count - copy_from_user(devc->ramdisk, buf, count);
+  up(&devc->sem1);
+
+Ioctl:
+  Same as Mode 1.
+Release:
+  down_interruptible(&devc->sem1);
+  devc->count2--;
+  if (devc->count2 == 1)
+      wake_up_interruptible(&(devc->queue2));
+  }
+  up(&devc->sem1);
+
+Multiple devices can be opened in mode 2 but all critical sections are properly protected by semaphores.
+I couldn't find any possible race conditions as all the critical sections are properly protected.
